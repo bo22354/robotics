@@ -134,6 +134,15 @@ class LineSensors_c {
       return onLine;
     }
 
+    bool allOnLine(){
+      bool onLine = true;
+      calcCalibratedADC();
+      for(int i = 0; i < NUM_SENSORS; i++){
+        if(calibrated[i] < 0.5) onLine = false;
+      }
+      return onLine;
+    }
+
 
 
 

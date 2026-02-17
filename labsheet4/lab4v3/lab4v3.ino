@@ -52,7 +52,7 @@ long turn_ts;
 long turn_ms = 1000;
 bool turning = false;
 bool detected = false;
-float detect_threshold = 3;
+float detect_threshold = 2;
 long pose_ts;
 long pose_ms = 20;
 
@@ -70,7 +70,7 @@ float max_drive_speed = 0.5;
 
 bool is_navigating = false;
 float nav_drive_gain = 0.5; 
-float nav_turn_gain = 0.5; 
+float nav_turn_gain = 0.3; 
 float nav_threshold = 3;
 
 struct Waypoint {
@@ -100,17 +100,33 @@ int current_waypoint = 0;
 int total_waypoints = sizeof(path) / sizeof(path[0]);
 bool path_following = false;
 unsigned long waypoint_wait_ts;
+// Add to globals
+Waypoint orbit_points[3]; // Two mid-points before the final far-side point
+
+
+
 bool waiting = false;
 unsigned long waiting_ts;
 #define WAITING_MS 4000
 enum RobotState {
   SEARCHING,       // Following the waypoint path
+  REPOSITIONING,
   SECURE_CAPSULE,  // Briefly driving forward to seat the puck in whiskers
   RETURNING_HOME,  // Navigating back via hubs or straight lines
   DROP_OFF,        // Releasing the puck at (0,0)
-  HOME_PAUSE       // Waiting before the next search
+  HOME_PAUSE,       // Waiting before the next search
+  RESETTING
 };
+
+const float CORNER_X = -55.0;
+const float CORNER_Y = -55.0;
+int reset_stage = 0;
+
 RobotState currentState = SEARCHING;
+int reposition_stage = 0;
+float circle_radius = 300;
+
+
 void setup() {
   pinMode( BUZZER_PIN, OUTPUT );
   Wire.begin();
@@ -207,7 +223,7 @@ void readMag(){
     analogWrite( BUZZER_PIN, 0);
   }
   display.gotoXY(0, 1); // Column 0, Row 1
-  display.print(m);
+//  display.print(m);
   mag_ts = millis();
 }
 float getSmallestAngleDiff(float target, float source) {
@@ -295,6 +311,72 @@ void updatePathFollowing() {
     }
   }
 }
+
+
+void startReposition(float puck_x, float puck_y) {
+  // 1. Calculate the angle from (0,0) to the puck
+  float angle_to_puck = atan2(puck_y, puck_x);
+
+  target_x = puck_x + (circle_radius * cos(angle_to_puck));
+  target_y = puck_y + (circle_radius * sin(angle_to_puck));
+  
+  // 2. Point 0: 60 degrees offset (Side)
+  orbit_points[0].x = puck_x + (circle_radius * cos(angle_to_puck + PI/3.0));
+  orbit_points[0].y = puck_y + (circle_radius * sin(angle_to_puck + PI/3.0));
+
+  // 3. Point 1: 30 degrees offset (Corner)
+  orbit_points[1].x = puck_x + (circle_radius * cos(angle_to_puck + PI/6.0));
+  orbit_points[1].y = puck_y + (circle_radius * sin(angle_to_puck + PI/6.0));
+
+  // 4. Point 2: The Apex (Directly behind the puck)
+  orbit_points[2].x = puck_x + (circle_radius * cos(angle_to_puck));
+  orbit_points[2].y = puck_y + (circle_radius * sin(angle_to_puck));
+  
+  reposition_stage = 0; 
+  currentState = REPOSITIONING;
+  test_ts = millis();
+}
+void setRotate(float target_rad) {
+  rotation_target = target_rad;
+  is_rotating = true;
+  left_pid.reset();
+  right_pid.reset();
+}
+
+bool checkRotate() {
+  if (!is_rotating) return false;
+
+  // 1. Calculate the shortest path to the target
+  float heading_error = getSmallestAngleDiff(rotation_target, pose.theta);
+
+  // 2. Proportional Control scaling
+  float turn_demand = heading_error * turn_gain;
+  turn_demand = constrain(turn_demand, -max_turn_speed, max_turn_speed);
+
+  // 3. Set symmetric motor demands (inverted for your specific motor orientation)
+  left_demand = -turn_demand;
+  right_demand = turn_demand;
+
+  display.gotoXY(0, 0);
+  display.print(pose.theta);
+//  display.gotoXY(0, 1);
+//  display.print();
+
+  // 4. Deadband Check: If error is < ~1 degree, stop.
+  if (abs(heading_error) < 0.01) { 
+    left_demand = 0;
+    right_demand = 0;
+    left_pid.reset();
+    right_pid.reset();
+    is_rotating = false; // Turn is complete
+    return false;
+  }
+
+  return true; // Still turning
+}
+
+
+
 void loop() {
   unsigned long current_ts = millis();
   // 1. SENSE (Always run)
@@ -302,6 +384,8 @@ void loop() {
   line_sensors.calcCalibratedADC();
   if (current_ts - pose_ts > pose_ms) {
     pose.update();
+    while (pose.theta > PI)  pose.theta -= TWO_PI;
+    while (pose.theta < -PI) pose.theta += TWO_PI;
     pose_ts = current_ts;
   }
   if (current_ts - mag_ms > mag_ts) {
@@ -312,28 +396,61 @@ void loop() {
     case SEARCHING:
       updatePathFollowing(); 
       if (detected) {
-        // if(current_waypoint == 2){
-        //   currentState = POSITION_2;
-        // }
-        // else{
-        currentState = SECURE_CAPSULE;
-        test_ts = millis(); // Start a small timer
-        // }        
+        left_demand = -0.3;
+        right_demand = -0.3;
+        // Only reposition for locations 1, 2, and 3 (Indices 0, 1, 3)
+        if (current_waypoint == 0 || current_waypoint == 1 || current_waypoint == 3) {
+            startReposition(path[current_waypoint].x, path[current_waypoint].y);
+            currentState = REPOSITIONING;
+            test_ts = millis();
+        } else {
+          currentState = SECURE_CAPSULE;
+          test_ts = millis(); 
+        }
       }
       break;
-    // case POSITION_2:
-    //   updatePathFollowing();
-    //   if(detected) {
-    //     currentState = SECURE_CAPSULE;
-    //     test_ts = millis()
-    //   }
+    case REPOSITIONING:
+      if (reposition_stage == 0) {
+        // STAGE 0: Reverse to clear the whiskers
+        left_demand = -0.3;
+        right_demand = -0.3;
+        if (millis() - test_ts > 3000) {
+//          startReposition(path[current_waypoint].x, path[current_waypoint].y);
+          setGoTo(orbit_points[0].x, orbit_points[0].y);
+          reposition_stage = 1;
+        }
+      } 
+      else if (reposition_stage == 1) {
+        // STAGE 1: First Hexagon Point (Side)
+        if (checkGoTo() == false) {
+          setGoTo(orbit_points[1].x, orbit_points[1].y);
+          reposition_stage = 2;
+        }
+      }
+      else if (reposition_stage == 2) {
+        // STAGE 2: Second Hexagon Point (Corner)
+        if (checkGoTo() == false) {
+          setGoTo(orbit_points[2].x, orbit_points[2].y);
+          reposition_stage = 3;
+        }
+      }
+      else if (reposition_stage == 3) {
+        // STAGE 3: Final Apex (Directly behind the puck)
+        if (checkGoTo() == false) {
+          // Now perfectly lined up with the puck and (0,0)
+          currentState = RETURNING_HOME;
+          setGoTo(0, 0);
+          nav_turn_gain = 0.2; // Keep it very smooth for the home stretch
+        }
+      }
+      break;
     case SECURE_CAPSULE:
       // Drive forward for 200ms to ensure puck is inside the whiskers 
       left_demand = 0.2;
       right_demand = 0.2;
       if (millis() - test_ts > 500) {
         // Lower the turn gain globally for the return trip to prevent dropping
-        nav_turn_gain = 0.25; 
+        nav_turn_gain = 0.2; 
         // Decide return path based on where we are
         // Locations 3, 4, 5 benefit from a "Hub" approach 
 //        if (current_waypoint >= 4) { 
@@ -359,7 +476,7 @@ void loop() {
       // Safety: If magnet signal disappears, we dropped the puck!
       if (!detected) {
         currentState = SEARCHING;
-        nav_turn_gain = 0.5; // Restore search turn speed
+        nav_turn_gain = 0.3; // Restore search turn speed
       }
       break;
     case DROP_OFF:
@@ -370,18 +487,90 @@ void loop() {
         left_demand = 0;
         right_demand = 0;
         detected = false;
-        nav_turn_gain = 0.5; // Restore turn speed for searching
+
+        reposition_stage = 0;
+        nav_turn_gain = 0.3; // Restore turn speed for searching
         waiting_ts = current_ts;
         currentState = HOME_PAUSE;
       }
       break;
     case HOME_PAUSE:
       if (current_ts - waiting_ts >= WAITING_MS) {
-        currentState = SEARCHING;
+        currentState = RESETTING;
         // Move to the next waypoint in the search sequence 
-        setGoTo(path[current_waypoint].x, path[current_waypoint].y);
+//        setGoTo(path[current_waypoint].x, path[current_waypoint].y);
+        reset_stage = 0;
+        test_ts = millis();
       }
       break;
+    case RESETTING:
+  if (reset_stage == 0) {
+    // STAGE 0: Turn to face the Left wall.
+    // Assuming forward is 0, left is 1.57 (PI/2).
+    setRotate(1.57); 
+    reset_stage = 1;
+  } 
+  else if (reset_stage == 1) {
+    // STAGE 1: Drive forwards until the side boundary line is detected.
+    if (checkRotate() == false) { // Wait for turn to finish
+
+      float target_h = 1.57;
+      float steering_error = getSmallestAngleDiff(target_h, pose.theta);
+      float turn_correction = steering_error * nav_turn_gain;
+      
+      left_demand  = 0.2 - turn_correction;
+      right_demand = 0.2 + turn_correction;
+      
+      // Use DN3 (middle sensor) to detect the black boundary.
+      if (line_sensors.allOnLine()) { 
+        left_demand = 0;
+        right_demand = 0;
+        reset_stage = 2;
+      }
+    }
+  }
+  else if (reset_stage == 2) {
+    // STAGE 2: Turn to face the Back wall.
+    // Turning another 90 degrees to face "backwards" (3.14 rads).
+    setRotate(3.14);
+    reset_stage = 3;
+  }
+  else if (reset_stage == 3) {
+    // STAGE 3: Drive forwards until the back boundary line is detected.
+    if (checkRotate() == false) {
+      float target_h = 3.14;
+      float steering_error = getSmallestAngleDiff(target_h, pose.theta);
+      float turn_correction = steering_error * nav_turn_gain;
+      
+      left_demand  = 0.2 - turn_correction;
+      right_demand = 0.2 + turn_correction;
+      
+      if (line_sensors.allOnLine() && pose.x <=0) {
+        left_demand = 0;
+        right_demand = 0;
+        setRotate(0.0);
+        reset_stage = 4;
+      }
+    }
+  }
+  else if (reset_stage == 4) {
+    // STAGE 4: Turn to front and hardcode the pose.
+    if (checkRotate() == false) {
+      display.gotoXY(0,1);
+      display.print("Stopped Turning");
+      // Hardcode the pose to the measured corner offsets.
+      pose.initialise(-25, 25, 0.0);
+      
+      left_pid.reset();
+      right_pid.reset();
+//      setGoTo(0,0);
+      detected = false;
+      currentState = SEARCHING;
+      current_waypoint = 0;
+      setGoTo(path[current_waypoint].x, path[current_waypoint].y);
+    }
+  }
+  break;
   }
   // 3. ACT
   updatePID(current_ts);
