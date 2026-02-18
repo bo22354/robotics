@@ -25,15 +25,15 @@ LIS3MDL mag;
 long mag_ts;
 long mag_ms = 100;
 
-boolean motorsRunning = true;
-unsigned long motors_ms = 1000;
-unsigned long motors_ts;
+// boolean motorsRunning = true;
+// unsigned long motors_ms = 1000;
+// unsigned long motors_ts; 
 
 unsigned long speed_est_ts; // timestamp for speed estimation
 #define SPEED_EST_MS 10     // estimate speed every 10ms
-long last_e0; //right
+long last_e0; 
 float speed_e0;
-long last_e1; //left
+long last_e1; 
 float speed_e1;
 
 unsigned long display_ts;
@@ -41,22 +41,23 @@ float smoothing_factor = 0.5;
 float last_speed0 = 0.0;
 float last_speed1 = 0.0;
 
+#define PID_UPDATE_MS 50
 PID_c left_pid;
 PID_c right_pid;
-#define PID_UPDATE_MS 50
 unsigned long pid_update_ts;
 float left_demand = 0.0;
 float right_demand = 0.0;
 
-long turn_ts;
-long turn_ms = 1000;
-bool turning = false;
+// long turn_ts;
+// long turn_ms = 1000;
+// bool turning = false;
 bool detected = false;
-float detect_threshold = 2;
+float detect_threshold = 3;
 long pose_ts;
 long pose_ms = 20;
 
 unsigned long test_ts;
+
 float rotation_target = 0;
 bool is_rotating = false;
 float turn_gain = 0.6; // Start small, e.g., 0.2 to 0.5
@@ -64,14 +65,14 @@ float max_turn_speed = 0.5;
 
 float target_x = 0;
 float target_y = 0;
-bool is_driving = false;
-float drive_gain = 0.3;
+// bool is_driving = false;
+// float drive_gain = 0.3;
 float max_drive_speed = 0.5;
 
 bool is_navigating = false;
 float nav_drive_gain = 0.5; 
 float nav_turn_gain = 0.3; 
-float nav_threshold = 3;
+float nav_threshold = 10;
 
 struct Waypoint {
   float x;
@@ -80,34 +81,26 @@ struct Waypoint {
 // Define your path (e.g., a triangle)
 Waypoint path[] = {
   {265, -55},     // Location 1
-  {220, -265},    // Location 2
-  {77, -160},     // Location 6
-  {278, -425},    // Location 3
-  {105, -420},     // Location 4
-  {-11, -357},      // Location 5
-  {0, 0}
+  {223, -270},    // Location 2
+  {77, -155},     // Location 6
+  {247, -438},    // Location 3
+  {110, -425},    // Location 4
+  {-11, -357},    // Location 5
+  {0, 0}          // Origin
 };
-//
-//Waypoint path[] = {
-//  {-11,-357},
-//  {0, -400},
-//  {10, -357},
-//  {0,0}
-//};
-//Assessment 3 Waypoints order:
-// 5,4,3,2,1,2,6
+
 int current_waypoint = 0;
 int total_waypoints = sizeof(path) / sizeof(path[0]);
-bool path_following = false;
 unsigned long waypoint_wait_ts;
-// Add to globals
 Waypoint orbit_points[3]; // Two mid-points before the final far-side point
 
+bool path_following = false;
 
 
-bool waiting = false;
-unsigned long waiting_ts;
 #define WAITING_MS 4000
+unsigned long waiting_ts;
+bool waiting = false;
+
 enum RobotState {
   SEARCHING,       // Following the waypoint path
   REPOSITIONING,
@@ -115,60 +108,127 @@ enum RobotState {
   RETURNING_HOME,  // Navigating back via hubs or straight lines
   DROP_OFF,        // Releasing the puck at (0,0)
   HOME_PAUSE,       // Waiting before the next search
-  RESETTING
+  RESETTING,
+  ZERO_ZERO,
+  COMPLETE
 };
+RobotState currentState = RESETTING;
 
-const float CORNER_X = -55.0;
-const float CORNER_Y = -55.0;
+
+// const float CORNER_X = -55.0;
+// const float CORNER_Y = -55.0;
 int reset_stage = 0;
-
-RobotState currentState = SEARCHING;
 int reposition_stage = 0;
 float circle_radius = 300;
 
+unsigned long start_time;
+unsigned long last_screen_update;
+const unsigned long TIME_LIMIT_MS = 240000;
+
+// bool stopEarly = false;
 
 void setup() {
-  pinMode( BUZZER_PIN, OUTPUT );
+  pinMode( BUZZER_PIN, OUTPUT ); 
   Wire.begin();
   mag_ts = millis();
-  left_pid.initialise( 60.0, 0.1, 0.0 );
-  right_pid.initialise( 60.0, 0.1, 0.0);
+
   setupEncoder0();
   setupEncoder1();
-  setupEncoder0();
-  setupEncoder1();
+  // setupEncoder0();
+  // setupEncoder1();
+
+  left_pid.initialise( 50.0, 0.2, 0.0 );
+  right_pid.initialise( 50.0, 0.2, 0.0);
   motors.initialise();
+  pose.initialise(0, 0, 0);
+  line_sensors.initialiseForADC();
+
   speed_est_ts = millis();
   pid_update_ts = millis();
   pose_ts = millis();
   left_pid.reset();
   right_pid.reset();
-  pose.initialise(0, 0, 0);
-  line_sensors.initialiseForADC(); // Ensure IR LEDs are ON
+
+  // Ensure IR LEDs are ON
   // Wait for Button A press to start
   Serial.begin(9600);
   Serial.println(" *** READY *** ");
   delay(1000);
-  if (!magnetometer.initialise() ) {  // no..? :(
+  if (!magnetometer.initialise() ) {
     while(1) {
       Serial.println("Failed to detect and initialize magnetometer!");
       delay(1000);
     }
   }
   magnetometer.mag.enableDefault();
-  Serial.println("Press Button A to calibrate Line Sensors");
   pinMode(14, INPUT_PULLUP);
-  while(digitalRead(14) == HIGH) delay(10);
+  while(digitalRead(14) == HIGH) delay(10); //Wait here until A is pressed
+
   calibration();
-  float temp = millis();
-  speed_est_ts = temp;
-  pid_update_ts = temp;
-  pose_ts = temp;
+
+  float temp_ts = millis();
+  speed_est_ts = temp_ts;
+  pid_update_ts = temp_ts;
+  pose_ts = temp_ts;
   path_following = true;
+
   setGoTo(path[0].x, path[0].y);
   left_pid.reset();
   right_pid.reset();
 }
+
+void calibration() {
+  start_time = millis();
+  last_screen_update = start_time;
+  left_demand = 0.5;
+  right_demand = -0.5;
+  left_pid.reset();
+  right_pid.reset();
+  unsigned long calibrationDuration = 4000; // Rotate for 4 seconds
+  unsigned long current_ts;
+  
+  line_sensors.initialiseCalibration();
+  magnetometer.initialiseCalibration();
+  
+  unsigned long startTime = millis();
+  while (millis() - startTime < calibrationDuration) {
+    current_ts = millis();
+    if (current_ts - last_screen_update > 1000) {
+      updateTime(current_ts);
+    }
+    // unsigned long current_ts = millis();
+    updatePID(current_ts);
+    line_sensors.calibrate();
+    magnetometer.calibrate();
+    delay(1); 
+  }
+
+  motors.setPWM(0, 0);
+  line_sensors.setScaling();
+  magnetometer.finalCalibrate();
+  pose.update();  
+}
+
+void updateTime(unsigned long current_ts){
+  last_screen_update = current_ts;
+  unsigned long elapsed_ms = current_ts - start_time;
+  int minutes = (elapsed_ms / 60000); 
+  int seconds = (elapsed_ms % 60000) / 1000; 
+
+  if (minutes > 4) { minutes = 4; seconds = 0; }
+
+  display.gotoXY(0, 0); 
+  if (minutes < 10) display.print("0");
+  display.print(minutes);
+  display.print(":");
+
+  if (seconds < 10) display.print("0");
+  display.print(seconds);
+}
+
+
+
+
 void calc_right_speed(unsigned long elapsed_time){
     long diff_e0 = count_e0 - last_e0;
     last_e0 = count_e0;
@@ -181,57 +241,31 @@ void calc_left_speed(unsigned long elapsed_time){
   speed_e1 = (float)diff_e1 / (float)elapsed_time;
   last_speed1 = (smoothing_factor*speed_e1)+((1.0-smoothing_factor)*last_speed1);
 }
-void calibration() {
-  Serial.println("Starting Line Sensor Calibration...");
-  line_sensors.initialiseCalibration();
-  magnetometer.initialiseCalibration();
-  left_demand = 0.5;
-  right_demand = -0.5;
-  left_pid.reset();
-  right_pid.reset();
-  unsigned long startTime = millis();
-  unsigned long calibrationDuration = 4000; // Rotate for 4 seconds
-  while (millis() - startTime < calibrationDuration) {
-    unsigned long current_ts = millis();
-    updatePID(current_ts);
-    line_sensors.calibrate();
-    magnetometer.calibrate();
-    delay(1); 
-  }
-  motors.setPWM(0, 0);
-  line_sensors.setScaling();
-  magnetometer.finalCalibrate();
-  Serial.println("Calibration Complete.");
-  delay(1000);
-  pose.update();  
-  Serial.println("Clear! Entering main loop.");
-}
-void outputSensor(){
-//  display.clear();
-  display.gotoXY(0, 0); // Column 0, Row 1
-  display.print(line_sensors.calibrated[0]);
-}
+
+
+
+
+
 void readMag(){
   magnetometer.calcCalibrated();
   float m = sqrt( sq(magnetometer.calibrated[0]) + sq(magnetometer.calibrated[1]) + sq(magnetometer.calibrated[2]) );
-//  if(m > detect_threshold){
-  if(m > 3){
+  if(m > detect_threshold){
     detected = true;
     analogWrite( BUZZER_PIN, 1);
   }
   else{
     analogWrite( BUZZER_PIN, 0);
   }
-  display.gotoXY(0, 1); // Column 0, Row 1
+//  display.gotoXY(0, 1); // Column 0, Row 1
 //  display.print(m);
   mag_ts = millis();
 }
 float getSmallestAngleDiff(float target, float source) {
   float diff = target - source;
-  // Use fmod to keep the difference within [-2*PI, 2*PI]
-  diff = fmod(diff, TWO_PI);
-  // This is the magic part: if the diff is more than 180 degrees, 
-  // it forces the robot to take the shorter path the other way.
+//
+//  diff = fmod(diff, TWO_PI);
+//  // This is the magic part: if the diff is more than 180 degrees, 
+//  // it forces the robot to take the shorter path the other way.
   if (diff > PI)  diff -= TWO_PI;
   if (diff < -PI) diff += TWO_PI;
   return diff;
@@ -270,8 +304,8 @@ bool checkGoTo() {
   float distance_error = sqrt(sq(dx) + sq(dy));
   float target_theta = atan2(dy, dx);
   float steering_error = getSmallestAngleDiff(target_theta, pose.theta);
-  display.gotoXY(0,0);
-  display.print(steering_error);
+//  display.gotoXY(0,0);
+//  display.print(steering_error);
   if (distance_error < nav_threshold) {
     left_demand = 0;
     right_demand = 0;
@@ -288,6 +322,7 @@ bool checkGoTo() {
   if (abs(steering_error) > (PI / 6.0)) {
       forward_demand = 0; 
   }
+
   left_demand = forward_demand - turn_component;
   right_demand = forward_demand + turn_component;
   return true;
@@ -304,8 +339,15 @@ void updatePathFollowing() {
       waiting = false;
       current_waypoint++;
       if (current_waypoint >= total_waypoints) {
+          waiting_ts = millis();
+          currentState = HOME_PAUSE;
           current_waypoint = 0; 
           // path_following = false; // Uncomment to stop after one lap
+      }
+      if(stopEarly){
+        path_following = false;
+        display.gotoXY(0,1);
+        display.print("here");
       }
       setGoTo(path[current_waypoint].x, path[current_waypoint].y);
     }
@@ -357,8 +399,8 @@ bool checkRotate() {
   left_demand = -turn_demand;
   right_demand = turn_demand;
 
-  display.gotoXY(0, 0);
-  display.print(pose.theta);
+//  display.gotoXY(0, 0);
+//  display.print(pose.theta);
 //  display.gotoXY(0, 1);
 //  display.print();
 
@@ -375,6 +417,12 @@ bool checkRotate() {
   return true; // Still turning
 }
 
+float getDistToOrigin() {
+  // Pythagorean theorem: distance = sqrt( x^2 + y^2 )
+  return sqrt(sq(pose.x) + sq(pose.y));
+}
+
+
 
 
 void loop() {
@@ -382,6 +430,15 @@ void loop() {
   // 1. SENSE (Always run)
   line_sensors.readSensorsADC();
   line_sensors.calcCalibratedADC();
+
+  if (current_ts - last_screen_update > 1000) {
+      updateTime(current_ts);
+
+      if (current_ts - start_time >= TIME_LIMIT_MS) {
+        currentState = COMPLETE;
+      }
+  }
+    
   if (current_ts - pose_ts > pose_ms) {
     pose.update();
     while (pose.theta > PI)  pose.theta -= TWO_PI;
@@ -399,7 +456,7 @@ void loop() {
         left_demand = -0.3;
         right_demand = -0.3;
         // Only reposition for locations 1, 2, and 3 (Indices 0, 1, 3)
-        if (current_waypoint == 0 || current_waypoint == 1 || current_waypoint == 3) {
+        if (current_waypoint == 0 || current_waypoint == 1 || current_waypoint == 3 || current_waypoint == 4) {
             startReposition(path[current_waypoint].x, path[current_waypoint].y);
             currentState = REPOSITIONING;
             test_ts = millis();
@@ -438,8 +495,17 @@ void loop() {
         // STAGE 3: Final Apex (Directly behind the puck)
         if (checkGoTo() == false) {
           // Now perfectly lined up with the puck and (0,0)
+          
           currentState = RETURNING_HOME;
-          setGoTo(0, 0);
+          float dist = sqrt(sq(pose.x) + sq(pose.y));
+          if (dist > 55.0) {
+             float ratio = 75 / dist;
+             float stop_x = pose.x * ratio;
+             float stop_y = pose.y * ratio;
+             setGoTo(stop_x, stop_y);
+          } else {
+             setGoTo(pose.x, pose.y); 
+          }
           nav_turn_gain = 0.2; // Keep it very smooth for the home stretch
         }
       }
@@ -449,128 +515,192 @@ void loop() {
       left_demand = 0.2;
       right_demand = 0.2;
       if (millis() - test_ts > 500) {
-        // Lower the turn gain globally for the return trip to prevent dropping
+        // Lower the turn gain globally for the return trip to prevent 
         nav_turn_gain = 0.2; 
-        // Decide return path based on where we are
-        // Locations 3, 4, 5 benefit from a "Hub" approach 
-//        if (current_waypoint >= 4) { 
-//           setGoTo(150, -200); // Temporary "Hub" coordinate
-//        } else {
-//           setGoTo(0, 0);
-//        }
-        setGoTo(0, 0);
+        float dist = sqrt(sq(pose.x) + sq(pose.y));
+        if (dist > 55.0) {
+           float ratio = 75 / dist;
+           float stop_x = pose.x * ratio;
+           float stop_y = pose.y * ratio;
+           setGoTo(stop_x, stop_y);
+        } else {
+           setGoTo(pose.x, pose.y); 
+        }
         currentState = RETURNING_HOME;
       }
       break;
-    case RETURNING_HOME:
-      // If checkGoTo returns false, we reached our current target
-      if (checkGoTo() == false) {
-        // If we aren't at (0,0) yet, we were at a Hub; now go home
-        if (abs(pose.x) > 15 || abs(pose.y) > 15) {
-          setGoTo(0, 0);
-        } else {
-          currentState = DROP_OFF;
-          test_ts = millis();
-        }
-      }
-      // Safety: If magnet signal disappears, we dropped the puck!
-      if (!detected) {
-        currentState = SEARCHING;
-        nav_turn_gain = 0.3; // Restore search turn speed
-      }
-      break;
-    case DROP_OFF:
-      // Back up to leave the puck in the home zone
-      left_demand = -0.3;
-      right_demand = -0.3;
-      if (millis() - test_ts > 1000) {
-        left_demand = 0;
-        right_demand = 0;
-        detected = false;
 
+
+    case RETURNING_HOME:
+      // 1. Monitor distance
+      if(checkGoTo() == false){
         reposition_stage = 0;
-        nav_turn_gain = 0.3; // Restore turn speed for searching
-        waiting_ts = current_ts;
-        currentState = HOME_PAUSE;
-      }
-      break;
-    case HOME_PAUSE:
-      if (current_ts - waiting_ts >= WAITING_MS) {
-        currentState = RESETTING;
-        // Move to the next waypoint in the search sequence 
-//        setGoTo(path[current_waypoint].x, path[current_waypoint].y);
-        reset_stage = 0;
+        currentState = DROP_OFF;
         test_ts = millis();
       }
       break;
-    case RESETTING:
-  if (reset_stage == 0) {
-    // STAGE 0: Turn to face the Left wall.
-    // Assuming forward is 0, left is 1.57 (PI/2).
-    setRotate(1.57); 
-    reset_stage = 1;
-  } 
-  else if (reset_stage == 1) {
-    // STAGE 1: Drive forwards until the side boundary line is detected.
-    if (checkRotate() == false) { // Wait for turn to finish
 
-      float target_h = 1.57;
-      float steering_error = getSmallestAngleDiff(target_h, pose.theta);
-      float turn_correction = steering_error * nav_turn_gain;
-      
-      left_demand  = 0.2 - turn_correction;
-      right_demand = 0.2 + turn_correction;
-      
-      // Use DN3 (middle sensor) to detect the black boundary.
-      if (line_sensors.allOnLine()) { 
+    case DROP_OFF:
+      // Removed the "Drop" print here to stop flickering/overwriting
+
+      if (reposition_stage == 0) {
+        // STAGE 0: The Pause (500ms)
         left_demand = 0;
         right_demand = 0;
-        reset_stage = 2;
+        
+//        display.gotoXY(0,1);
+//        display.print("Wait...");
+        
+        if (millis() - test_ts > 500) {
+          reposition_stage = 1;
+          test_ts = millis();
+        }
+      } 
+      else if (reposition_stage == 1) {
+        // STAGE 1: The Reverse
+//        display.gotoXY(0,1);
+//        display.print("Reversing");
+
+        // Increased power to -0.3 to prevent stalling
+        left_demand = -0.3;
+        right_demand = -0.3;
+        
+        // Back up for 1.2 seconds
+        if (millis() - test_ts > 1200) { 
+          left_demand = 0;
+          right_demand = 0;
+          reposition_stage = 2;
+          test_ts = millis();
+        }
       }
-    }
-  }
-  else if (reset_stage == 2) {
-    // STAGE 2: Turn to face the Back wall.
-    // Turning another 90 degrees to face "backwards" (3.14 rads).
-    setRotate(3.14);
-    reset_stage = 3;
-  }
-  else if (reset_stage == 3) {
-    // STAGE 3: Drive forwards until the back boundary line is detected.
-    if (checkRotate() == false) {
-      float target_h = 3.14;
-      float steering_error = getSmallestAngleDiff(target_h, pose.theta);
-      float turn_correction = steering_error * nav_turn_gain;
-      
-      left_demand  = 0.2 - turn_correction;
-      right_demand = 0.2 + turn_correction;
-      
-      if (line_sensors.allOnLine() && pose.x <=0) {
-        left_demand = 0;
-        right_demand = 0;
-        setRotate(0.0);
-        reset_stage = 4;
+      else if (reposition_stage == 2) {
+        // STAGE 2: Finished
+//        display.gotoXY(0,1);
+//        display.print("Done");
+        
+        detected = false;
+        nav_turn_gain = 0.3; 
+        waiting_ts = millis();
+        currentState = HOME_PAUSE;
       }
-    }
-  }
-  else if (reset_stage == 4) {
-    // STAGE 4: Turn to front and hardcode the pose.
-    if (checkRotate() == false) {
-      display.gotoXY(0,1);
-      display.print("Stopped Turning");
-      // Hardcode the pose to the measured corner offsets.
-      pose.initialise(-25, 25, 0.0);
-      
+      break;
+
+
+
+
+
+
+
+
+
+
+
+
+    case HOME_PAUSE:
+      if (current_ts - waiting_ts >= WAITING_MS) {
+        
+        currentState = RESETTING;
+        reset_stage = 0;
+        test_ts = millis();
+
+//        currentState = SEARCHING;
+//        current_waypoint = 6;
+//        setGoTo(path[current_waypoint].x, path[current_waypoint].y);
+      }
+      break;
+    case RESETTING:
+      if (reset_stage == 0) {
+        // STAGE 0: Turn to face the Left wall.
+        // Assuming forward is 0, left is 1.57 (PI/2).
+        setRotate(1.57); 
+        reset_stage = 1;
+      } 
+      else if (reset_stage == 1) {
+        // STAGE 1: Drive forwards until the side boundary line is detected.
+        if (checkRotate() == false) { // Wait for turn to finish
+    
+          float target_h = 1.57;
+          float steering_error = getSmallestAngleDiff(target_h, pose.theta);
+          float turn_correction = steering_error * nav_turn_gain;
+          
+          left_demand  = 0.2 - turn_correction;
+          right_demand = 0.2 + turn_correction;
+          
+          // Use DN3 (middle sensor) to detect the black boundary.
+          if (line_sensors.allOnLine()) { 
+            left_demand = 0;
+            right_demand = 0;
+            reset_stage = 2;
+          }
+          if(pose.y > 100){
+            //go to (0,0) and try again
+            setGoTo(50,50);
+            reset_stage == 5;
+          }
+        }
+      }
+      else if (reset_stage == 2) {
+        // STAGE 2: Turn to face the Back wall.
+        // Turning another 90 degrees to face "backwards" (3.14 rads).
+        setRotate(3.14);
+        reset_stage = 3;
+      }
+      else if (reset_stage == 3) {
+        // STAGE 3: Drive forwards until the back boundary line is detected.
+        if (checkRotate() == false) {
+          float target_h = 3.14;
+          float steering_error = getSmallestAngleDiff(target_h, pose.theta);
+          float turn_correction = steering_error * nav_turn_gain;
+          
+          left_demand  = 0.2 - turn_correction;
+          right_demand = 0.2 + turn_correction;
+          
+          if (line_sensors.allOnLine() && pose.x <=0) {
+            left_demand = 0;
+            right_demand = 0;
+            setRotate(0.0);
+            reset_stage = 4;
+          }
+          else if(pose.x < -100){
+            setGoTo(50,50);
+            reset_stage == 5;
+          }
+        }
+      }
+      else if (reset_stage == 4) {
+        // STAGE 4: Turn to front and hardcode the pose.
+        if (checkRotate() == false) {
+//          display.gotoXY(0,1);
+//          display.print("Stopped Turning");
+          // Hardcode the pose to the measured corner offsets.
+          pose.initialise(-24, 45, 0.0);
+          
+          left_pid.reset();
+          right_pid.reset();
+  //        stopEarly = true;
+  
+          detected = false;
+          currentState = SEARCHING;
+          current_waypoint = 0;
+          setGoTo(path[current_waypoint].x, path[current_waypoint].y);
+         
+        }
+      }
+      break;
+    case COMPLETE:
+      // Hard Stop
+      left_demand = 0;
+      right_demand = 0;
       left_pid.reset();
       right_pid.reset();
-//      setGoTo(0,0);
-      detected = false;
-      currentState = SEARCHING;
-      current_waypoint = 0;
-      setGoTo(path[current_waypoint].x, path[current_waypoint].y);
-    }
-  }
-  break;
+      motors.setPWM(0, 0); // Force motors off at hardware level just in case
+      
+      // Optional: Visual indication
+      display.gotoXY(0, 1);
+      display.print("TIME UP!");
+      
+      // Do nothing else. The robot is now a brick.
+        break;
   }
   // 3. ACT
   updatePID(current_ts);
