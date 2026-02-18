@@ -18,13 +18,8 @@ LIS3MDL mag;
 long mag_ts;
 long mag_ms = 100;
 
-// boolean motorsRunning = true;
-// unsigned long motors_ms = 1000;
-// unsigned long motors_ts; 
-
-unsigned long speed_est_ts; // timestamp for speed estimation
-#define SPEED_EST_MS 10     // estimate speed every 10ms
-long last_e0; 
+unsigned long speed_est_ts; 
+#define SPEED_EST_MS 10     
 float speed_e0;
 long last_e1; 
 float speed_e1;
@@ -41,9 +36,6 @@ unsigned long pid_update_ts;
 float left_demand = 0.0;
 float right_demand = 0.0;
 
-// long turn_ts;
-// long turn_ms = 1000;
-// bool turning = false;
 bool detected = false;
 float detect_threshold = 3;
 long pose_ts;
@@ -53,13 +45,11 @@ unsigned long test_ts;
 
 float rotation_target = 0;
 bool is_rotating = false;
-float turn_gain = 0.6; // Start small, e.g., 0.2 to 0.5
+float turn_gain = 0.6; 
 float max_turn_speed = 0.5;
 
 float target_x = 0;
 float target_y = 0;
-// bool is_driving = false;
-// float drive_gain = 0.3;
 float max_drive_speed = 0.5;
 
 bool is_navigating = false;
@@ -71,7 +61,6 @@ struct Waypoint {
   float x;
   float y;
 };
-// Define your path (e.g., a triangle)
 Waypoint path[] = {
   {265, -55},     // Location 1
   {223, -270},    // Location 2
@@ -85,7 +74,7 @@ Waypoint path[] = {
 int current_waypoint = 0;
 int total_waypoints = sizeof(path) / sizeof(path[0]);
 unsigned long waypoint_wait_ts;
-Waypoint orbit_points[3]; // Two mid-points before the final far-side point
+Waypoint orbit_points[3]; 
 
 bool path_following = false;
 
@@ -95,21 +84,18 @@ unsigned long waiting_ts;
 bool waiting = false;
 
 enum RobotState {
-  SEARCHING,       // Following the waypoint path
+  SEARCHING,       
   REPOSITIONING,
-  SECURE_CAPSULE,  // Briefly driving forward to seat the puck in whiskers
-  RETURNING_HOME,  // Navigating back via hubs or straight lines
-  DROP_OFF,        // Releasing the puck at (0,0)
-  HOME_PAUSE,       // Waiting before the next search
+  SECURE_CAPSULE,  
+  RETURNING_HOME,  
+  DROP_OFF,        
+  HOME_PAUSE,       
   RESETTING,
   ZERO_ZERO,
   COMPLETE
 };
 RobotState currentState = RESETTING;
 
-
-// const float CORNER_X = -55.0;
-// const float CORNER_Y = -55.0;
 int reset_stage = 0;
 int reposition_stage = 0;
 float circle_radius = 300;
@@ -118,8 +104,6 @@ unsigned long start_time;
 unsigned long last_screen_update;
 const unsigned long TIME_LIMIT_MS = 240000;
 
-// bool stopEarly = false;
-
 void setup() {
   pinMode( BUZZER_PIN, OUTPUT ); 
   Wire.begin();
@@ -127,8 +111,6 @@ void setup() {
 
   setupEncoder0();
   setupEncoder1();
-  // setupEncoder0();
-  // setupEncoder1();
 
   left_pid.initialise( 50.0, 0.2, 0.0 );
   right_pid.initialise( 50.0, 0.2, 0.0);
@@ -177,7 +159,7 @@ void calibration() {
   right_demand = -0.5;
   left_pid.reset();
   right_pid.reset();
-  unsigned long calibrationDuration = 4000; // Rotate for 4 seconds
+  unsigned long calibrationDuration = 4000; 
   unsigned long current_ts;
   
   line_sensors.initialiseCalibration();
@@ -189,7 +171,6 @@ void calibration() {
     if (current_ts - last_screen_update > 1000) {
       updateTime(current_ts);
     }
-    // unsigned long current_ts = millis();
     updatePID(current_ts);
     line_sensors.calibrate();
     magnetometer.calibrate();
